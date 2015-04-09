@@ -2,16 +2,29 @@
 __author__ = 'yuan'
 
 from ConfigParser import ConfigParser
+import os
+import socket
 
-import os, socket
 
 from ruffus import *
+import ruffus.cmdline as cmdline
+
+parser = cmdline.get_argparse(description='Perform exome analysis on alignment files in bam format using GATK.')
+
+parser.add_argument("input_bams", nargs='*')
+
+options = parser.parse_args()
+
+#  standard python logger which can be synchronised across concurrent Ruffus tasks
+logger, logger_mutex = cmdline.setup_logging (__name__, options.log_file, options.verbose)
+
 
 hostname = socket.gethostname()
 sys_cfg = ConfigParser()
 sys_cfg.read('{}.sys.cfg'.format(hostname))
 
-input_bams = ['test_data/sample_a.bam', 'test_data/sample_b.bam']
+
+input_bams = options.input_bams or ['test_data/sample_a.bam', 'test_data/sample_b.bam']
 
 input_bam_exts = set(map(lambda p:os.path.splitext(p)[1], input_bams))
 assert len(input_bam_exts) == 1
@@ -96,9 +109,4 @@ def remove_intermediate_bams(in_bam, out):
     os.remove(in_bam)
 
 
-
-
-if __name__ == '__main__':
-    # for f in input_bams:
-    #     touch_file(f)
-    pipeline_run(verbose=4, multithread=10)
+cmdline.run (options)
