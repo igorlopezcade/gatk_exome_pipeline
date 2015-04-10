@@ -4,14 +4,14 @@
 
 1. Preprocess input sequence files
    * If the input sequences contain adaptors, use _cutadapt_ or similar tools to trim them off.  
-   * Use _FastQC_ to access the quality of input sequences.
+   * Use [_FastQC_](http://www.bioinformatics.babraham.ac.uk/projects/fastqc/) to access the quality of input sequences.
     
 2. Align input suquences 
    1. Use _bwa_ to align the sequences to reference genome. 
    2. Use _Picard_ to sort and deduplicate the obtained alignment bam files.
    
 3. Variant-call with _GATK_
-   The preprocessing of bam files and variant-calling is conducted according to [_GATK_ best practices for DNAseq_](https://www.broadinstitute.org/gatk/guide/best-practices?bpm=DNAseq).
+   The preprocessing of bam files and variant-calling is conducted according to [_GATK best practices for DNAseq_](https://www.broadinstitute.org/gatk/guide/best-practices?bpm=DNAseq).
    
 4. Annotate variants 
    Evaluate the variants with [_Variant Effect Predictor_](http://www.ensembl.org/info/docs/tools/vep/index.html) or similar tools.
