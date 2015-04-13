@@ -66,12 +66,11 @@ def test_lr(a):
 
 
 int_ext = bam_ext + ".intervals"
-@transform(input_bams, suffix(bam_ext), (bam_ext, int_ext))
+@transform(input_bams, suffix(bam_ext), (int_ext, bam_ext))
 def create_realigner_target(bam_fn, out_files):
-    int_fn = out_files[1]
-    cmd = "{basecmd} -T RealignerTargetCreator -o {int_file} -I {inputbam} " \
-          "--known {bundle[a1000g_indels]} ".format(basecmd=basecmd, inputbam=bam_fn, int_file=int_fn, opt=options,
-          bundle=gatk_bundle, java_cmd=java_cmd)
+    int_fn = out_files[0]
+    cmd = basecmd + " -T RealignerTargetCreator -o {int_fn} -I {bam_fn} " \
+          "--known {bundle[a1000g_indels]} ".format(bundle=gatk_bundle, **locals())
     logger.info(cmd)
     os.system(cmd)
 
@@ -80,34 +79,29 @@ realignedbam_ext = '.realigned'+bam_ext
 
 
 @follows(create_realigner_target)
-@transform(create_realigner_target, suffix(bam_ext), realignedbam_ext)
+@transform(create_realigner_target, suffix(int_ext), realignedbam_ext)
 def realign_indel(in_files, out_bam):
-    in_bam, interval_fn = in_files
-    cmd = "{basecmd} -T IndelRealigner -I {inputbam} -o {out_bam} -targetIntervals {interval_fn}".format(basecmd=basecmd,
-                                                                                                         inputbam=in_bam,
-                                                                                                         interval_fn=interval_fn,
-                                                                                                         out_bam=out_bam)
+    interval_fn, in_bam = in_files
+    cmd = basecmd + " -T IndelRealigner -I {in_bam} -o {out_bam} -targetIntervals {interval_fn}".format(**locals())
     logger.info(cmd)
     os.system(cmd)
 
 recal_ext = realignedbam_ext+'.recal_data.grp'
 @follows(realign_indel)
-@transform(realign_indel, suffix(realignedbam_ext), [realignedbam_ext, recal_ext])
+@transform(realign_indel, suffix(realignedbam_ext), [recal_ext, realignedbam_ext])
 @log_and_run
 def get_recal_group(in_bam, out_fiels):
-    recal_group_fn = out_fiels[1]
-    cmd = "{basecmd} -T BaseRecalibrator -I {in_bam} -o {out_fn} -knownSites {bundle[dbsnp]}".format(basecmd=basecmd,
-                                                                                                    in_bam=in_bam,
-                                                                                                    out_fn=recal_group_fn,
-                                                                                                    bundle=gatk_bundle)
+    recal_group_fn = out_fiels[0]
+    cmd = basecmd + " -T BaseRecalibrator -I {in_bam} -o {recal_group_fn} -knownSites {bundle[dbsnp]}".format(
+        bundle=gatk_bundle, **locals())
     return cmd
 
 recalbam_ext = '.preprocessed'+bam_ext
 @follows(get_recal_group)
-@transform(get_recal_group, suffix(realignedbam_ext), recalbam_ext)
+@transform(get_recal_group, suffix(recal_ext), recalbam_ext)
 def recalibrate_base(in_files, out_bam):
-    in_bam, recal_grp_file = in_files
-    cmd = "{basecmd} -T PrintReads -I {in_bam} -o {out_bam} -BQSR {recal_grp_file}".format(basecmd=basecmd, **locals())
+    recal_grp_file, in_bam = in_files
+    cmd = basecmd + " -T PrintReads -I {in_bam} -o {out_bam} -BQSR {recal_grp_file}".format(**locals())
     logger.info(cmd)
     return os.system(cmd)
 
@@ -116,53 +110,101 @@ vcf_ext = '.vcf'
 @follows(recalibrate_base)
 @transform(recalibrate_base, suffix(recalbam_ext), vcf_ext)
 def call_haplotype(in_bam, out_vcf):
-    cmd = "{basecmd} -T HaplotypeCaller -I {in_bam} -o {out_vcf} --dbsnp {gatk_bundle[dbsnp]} -stand_emit_conf 10.0 " \
-          "-stand_call_conf 30.0".format(basecmd=basecmd, gatk_bundle=gatk_bundle, **locals())
+    cmd = basecmd + " -T HaplotypeCaller -I {in_bam} -o {out_vcf} --dbsnp {gatk_bundle[dbsnp]} -stand_emit_conf 10.0 " \
+          "-stand_call_conf 30.0".format(gatk_bundle=gatk_bundle, **locals())
     logger.info(cmd)
     return os.system(cmd)
 
-# snpvcf_ext = '.snp.vcf'
-# @follows(call_haplotype)
-# @transform(call_haplotype, suffix(vcf_ext), snpvcf_ext)
-# def select_snp_variants(in_vcf, out_vcf):
-#
-#
-# indelvcf_ext = '.indel.vcf'
-# @follows(call_haplotype)
-# @transform(call_haplotype, suffix(vcf_ext), indelvcf_ext)
-# def select_indel_variants(in_vcf, out_vcf):
-#     open(out_vcf, 'w').write('indel in {}\n'.format(in_vcf))
 
-# hf_snpvcf_ext = '.hardfiltered.snp.vcf'
-# @follows(select_snp_variants)
-# @transform(select_snp_variants, suffix(snpvcf_ext), hf_snpvcf_ext)
-# def hardfilter_snp_variants(in_vcf, out_vcf):
-#     open(out_vcf, 'w').write('hf snp in {}\n'.format(in_vcf))
-#
-# hf_indelvcf_ext = '.hardfiltered.indel.vcf'
-# @follows(select_indel_variants)
-# @transform(select_indel_variants, suffix(indelvcf_ext), hf_indelvcf_ext)
-# def hardfilter_indel_variants(in_vcf, out_vcf):
-#     open(out_vcf, 'w').write('hf indel in {}\n'.format(in_vcf))
-#
-# merged_vcf_ext = '.hardfiltered.vcf'
-# @follows(hardfilter_snp_variants, hardfilter_indel_variants)
-# @collate([hardfilter_snp_variants, hardfilter_indel_variants], regex(r'(.+).hardfiltered.*.vcf'),
-#          r'\1{}'.format(merged_vcf_ext))
-# def merge_hf_vcf(in_vcfs, out_vcf):
-#     open(out_vcf, 'w').write('merged {}\n'.format(','.join(in_vcfs)))
-#
-#
-# @follows(merge_hf_vcf)
-# @transform((select_snp_variants, select_indel_variants, hardfilter_indel_variants, hardfilter_snp_variants),
-#            suffix(vcf_ext), '')
-# def remove_intermediate_vcfs(in_vcf, out):
-#     os.remove(in_vcf)
-#
-# @follows(merge_hf_vcf)
-# @transform([realign_indel], suffix(bam_ext), '')
-# def remove_intermediate_bams(in_bam, out):
-#     os.remove(in_bam)
+def _get_filtrate_sub_cmd(in_vcf, out_vcf, **name_filter):
+    return ' '.join([' -T VariantFiltration -V {} -o {}'.format(in_vcf, out_vcf)] +
+                    ['-filter "{}" -filterName {}'.format(v, k) for k,v in name_filter.iteritems() ])
+
+
+LOWQUAL_NAME_FILTER = {'QD_filter':'QD < 5.0', 'LowCoverage': "DP < 10"}
+
+qfvcf_ext = '.qf.vcf'
+@follows(call_haplotype)
+@transform(call_haplotype, suffix(vcf_ext), qfvcf_ext)
+def filtrate_low_qual(in_vcf, out_vcf):
+    cmd = basecmd + _get_filtrate_sub_cmd(in_vcf, out_vcf, **LOWQUAL_NAME_FILTER)
+    logger.info(cmd)
+    return os.system(cmd)
+
+
+snpvcf_ext = '.snp.vcf'
+@follows(filtrate_low_qual)
+@transform(filtrate_low_qual, suffix(qfvcf_ext), snpvcf_ext)
+def select_snp_variants(in_vcf, out_vcf):
+    cmd = "{basecmd} -T SelectVariants -selectType SNP -selectType MNP --variant {in_vcf} -o {out_vcf}".format(
+        basecmd=basecmd, **locals())
+    logger.info(cmd)
+    return os.system(cmd)
+
+indelvcf_ext = '.indel.vcf'
+@follows(call_haplotype)
+@transform(call_haplotype, suffix(vcf_ext), indelvcf_ext)
+def select_indel_variants(in_vcf, out_vcf):
+    cmd = "{basecmd} -T SelectVariants -selectType INDEL --variant {in_vcf} -o {out_vcf}".format(
+        basecmd=basecmd, **locals())
+    logger.info(cmd)
+    return os.system(cmd)
+
+SNP_HARD_FILTER = "QD < 2.0 || FS > 60.0 || MQ < 40.0 || MQRankSum < -12.5 || ReadPosRankSum < -8.0"
+
+
+hf_snpvcf_ext = '.hardfiltered.snp.vcf'
+@follows(select_snp_variants)
+@transform(select_snp_variants, suffix(snpvcf_ext), hf_snpvcf_ext)
+def hardfilter_snp_variants(in_vcf, out_vcf):
+    cmd = basecmd + _get_filtrate_sub_cmd(in_vcf, out_vcf, snp_hard_filter=SNP_HARD_FILTER)
+    logger.info(cmd)
+    return os.system(cmd)
+
+INDEL_HARD_FILTER = "QD < 2.0 || FS > 200.0 || ReadPosRankSum < -20.0"
+
+hf_indelvcf_ext = '.hardfiltered.indel.vcf'
+@follows(select_indel_variants)
+@transform(select_indel_variants, suffix(indelvcf_ext), hf_indelvcf_ext)
+def hardfilter_indel_variants(in_vcf, out_vcf):
+    cmd = basecmd + _get_filtrate_sub_cmd(in_vcf, out_vcf, indel_hard_filter=INDEL_HARD_FILTER)
+    logger.info(cmd)
+    return os.system(cmd)
+
+merged_vcf_ext = '.hardfiltered.vcf'
+@follows(hardfilter_snp_variants, hardfilter_indel_variants)
+@collate([hardfilter_snp_variants, hardfilter_indel_variants], regex(r'(.+).hardfiltered.*.vcf'),
+         r'\1{}'.format(merged_vcf_ext))
+def merge_hf_vcf(in_vcfs, out_vcf):
+    cmd = ' '.join([basecmd, '-T CombineVariants', '-o '+out_vcf]+['--variant '+f for f in in_vcfs])
+    logger.info(cmd)
+    return os.system(cmd)
+
+@follows(merge_hf_vcf)
+@transform(create_realigner_target, suffix(int_ext), '')
+def remove_realign_interval(in_fns, out_fn):
+    os.remove(in_fns[0])
+
+
+@follows(merge_hf_vcf)
+@transform((filtrate_low_qual, select_snp_variants, select_indel_variants, hardfilter_indel_variants,
+            hardfilter_snp_variants),
+           suffix(vcf_ext), '')
+def remove_intermediate_vcfs(in_vcf, out):
+    os.remove(in_vcf)
+    os.remove(in_vcf+'.idx')
+
+@follows(merge_hf_vcf)
+@transform(realign_indel, suffix(realignedbam_ext), '')
+def remove_realigned_bam(in_fn, out_fn):
+    os.remove(in_fn)
+    os.remove(in_fn[:-1]+'i')
+
+@follows(merge_hf_vcf)
+@transform(get_recal_group, suffix(recal_ext), '')
+def remove_read_group_file(in_fn, out_fn):
+    os.remove(in_fn[0])
+
 
 
 cmdline.run(options)
