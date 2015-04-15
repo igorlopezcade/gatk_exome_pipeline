@@ -1,4 +1,3 @@
-
 __author__ = 'yuan'
 
 from ConfigParser import ConfigParser
@@ -36,7 +35,9 @@ parser.add_argument('--ref', required=True,
 parser.add_argument('--intervals', help="One or more genomic intervals over which to operate. GATK engine parameter.")
 
 
-options = parser.parse_args()
+options = parser.parse_args("--verbose 4 --ref b37 --intervals test_data/sample_target.intervals "
+                            "-T remove_realign_interval -T remove_realigned_bam -T remove_read_group_file "
+                            "-T remove_intermediate_vcfs".split())
 
 #  standard python logger which can be synchronised across concurrent Ruffus tasks
 logger, logger_mutex = cmdline.setup_logging (__name__, options.log_file, options.verbose)
@@ -81,31 +82,29 @@ realignedbam_ext = '.realigned'+bam_ext
 
 
 @follows(create_realigner_target)
-@collate([input_bams, create_realigner_target], regex(r'(.+){}.*'.format(bam_ext, int_ext)),
-         r'\1{}'.format(realignedbam_ext))
+@transform(create_realigner_target, suffix(int_ext), add_inputs([r"\1"+bam_ext]), realignedbam_ext)
 def realign_indel(in_files, out_bam):
-    in_bams, interval_fn = in_files
-    in_bam = in_bams[0]
-    cmd = basecmd + " -T IndelRealigner -I {in_bam} -o {out_bam} -targetIntervals {interval_fn}".format(**locals())
+    interval_fn, in_bam = in_files
+    cmd = basecmd + " -T IndelRealigner -I {in_bam[0]} -o {out_bam} -targetIntervals {interval_fn}".format(**locals())
     logger.info(cmd)
     os.system(cmd)
 
 recal_ext = realignedbam_ext+'.recal_data.grp'
 @follows(realign_indel)
-@transform(realign_indel, suffix(realignedbam_ext), [recal_ext, realignedbam_ext])
-def get_recal_group(in_bam, out_fiels):
-    recal_group_fn = out_fiels[0]
+@transform(realign_indel, suffix(realignedbam_ext), recal_ext)
+def get_recal_group(in_bam, recal_group_fn):
     cmd = basecmd + " -T BaseRecalibrator -I {in_bam} -o {recal_group_fn} -knownSites {bundle[dbsnp]}".format(
         bundle=gatk_bundle, **locals())
     logger.info(cmd)
     os.system(cmd)
 
+
 recalbam_ext = '.preprocessed'+bam_ext
 @follows(get_recal_group)
-@transform(get_recal_group, suffix(recal_ext), recalbam_ext)
+@transform(get_recal_group, suffix(recal_ext), add_inputs([r"\1"+realignedbam_ext]),recalbam_ext)
 def recalibrate_base(in_files, out_bam):
     recal_grp_file, in_bam = in_files
-    cmd = basecmd + " -T PrintReads -I {in_bam} -o {out_bam} -BQSR {recal_grp_file}".format(**locals())
+    cmd = basecmd + " -T PrintReads -I {in_bam[0]} -o {out_bam} -BQSR {recal_grp_file}".format(**locals())
     logger.info(cmd)
     return os.system(cmd)
 
@@ -217,6 +216,6 @@ def remove_read_group_file(in_fn, out_fn):
 
 options.history_file = '.gatk_exome_pipeline.ruffus_history.sqlite'
 
-cmdline.run(options, gnu_make_maximal_rebuild_mode=True, checksum_level=1)
+cmdline.run(options, gnu_make_maximal_rebuild_mode=True, checksum_level=1, touch_file_only=True)
 
 
