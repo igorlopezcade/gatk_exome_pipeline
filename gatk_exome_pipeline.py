@@ -9,6 +9,20 @@ import socket
 from ruffus import *
 import ruffus.cmdline as cmdline
 
+def zero_file(filename):
+    if os.path.exists(filename):
+        # save the current time of the file
+        time_info = os.stat(filename)
+        try:
+            f = open(filename, 'w')
+        except IOError:
+            pass
+        else:
+            f.truncate(0)
+            f.close()
+            # change the time of the file back to what it was
+            os.utime(filename, (time_info.st_atime, time_info.st_mtime))
+
 hostname = socket.gethostname()
 sys_cfg = ConfigParser()
 sys_cfg.read('{}.sys.cfg'.format(hostname))
@@ -18,7 +32,7 @@ parser = cmdline.get_argparse(description='Perform exome analysis on alignment f
 parser.add_argument('--gatk', default=sys_cfg.get('program', 'gatk'), help='path to GATK jar file')
 parser.add_argument("input_bams", nargs='*')
 parser.add_argument('--ref', required=True,
-                    help='specify which reference to use. It should be consistant with the reference used in alignment.')
+                    help='specify which reference to use. It should be consistent with the reference used in alignment.')
 parser.add_argument('--intervals', help="One or more genomic intervals over which to operate. GATK engine parameter.")
 
 
@@ -53,22 +67,11 @@ bam_ext = list(input_bam_exts)[0]
 
 basecmd = "{java_cmd} -R {bundle[ref_fasta]} -L {opt.intervals}".format(opt=options, bundle=gatk_bundle, java_cmd=java_cmd)
 
-def log_and_run(func):
-    def _func(*args, **kwargs):
-        cmd = func(*args, **kwargs)
-        print(cmd)
-        return os.system(cmd)
-    return _func
-
-@log_and_run
-def test_lr(a):
-    return 'echo {!s}'.format(a)
 
 
 int_ext = bam_ext + ".intervals"
-@transform(input_bams, suffix(bam_ext), (int_ext, bam_ext))
-def create_realigner_target(bam_fn, out_files):
-    int_fn = out_files[0]
+@transform(input_bams, suffix(bam_ext), int_ext)
+def create_realigner_target(bam_fn, int_fn):
     cmd = basecmd + " -T RealignerTargetCreator -o {int_fn} -I {bam_fn} " \
           "--known {bundle[a1000g_indels]} ".format(bundle=gatk_bundle, **locals())
     logger.info(cmd)
@@ -77,11 +80,12 @@ def create_realigner_target(bam_fn, out_files):
 realignedbam_ext = '.realigned'+bam_ext
 
 
-
 @follows(create_realigner_target)
-@transform(create_realigner_target, suffix(int_ext), realignedbam_ext)
+@collate([input_bams, create_realigner_target], regex(r'(.+){}.*'.format(bam_ext, int_ext)),
+         r'\1{}'.format(realignedbam_ext))
 def realign_indel(in_files, out_bam):
-    interval_fn, in_bam = in_files
+    in_bams, interval_fn = in_files
+    in_bam = in_bams[0]
     cmd = basecmd + " -T IndelRealigner -I {in_bam} -o {out_bam} -targetIntervals {interval_fn}".format(**locals())
     logger.info(cmd)
     os.system(cmd)
@@ -89,12 +93,12 @@ def realign_indel(in_files, out_bam):
 recal_ext = realignedbam_ext+'.recal_data.grp'
 @follows(realign_indel)
 @transform(realign_indel, suffix(realignedbam_ext), [recal_ext, realignedbam_ext])
-@log_and_run
 def get_recal_group(in_bam, out_fiels):
     recal_group_fn = out_fiels[0]
     cmd = basecmd + " -T BaseRecalibrator -I {in_bam} -o {recal_group_fn} -knownSites {bundle[dbsnp]}".format(
         bundle=gatk_bundle, **locals())
-    return cmd
+    logger.info(cmd)
+    os.system(cmd)
 
 recalbam_ext = '.preprocessed'+bam_ext
 @follows(get_recal_group)
@@ -180,31 +184,39 @@ def merge_hf_vcf(in_vcfs, out_vcf):
     logger.info(cmd)
     return os.system(cmd)
 
+zeroed_ext = '.is_zeroed'
+
 @follows(merge_hf_vcf)
-@transform(create_realigner_target, suffix(int_ext), '')
+@transform(create_realigner_target, suffix(int_ext), int_ext+zeroed_ext)
 def remove_realign_interval(in_fns, out_fn):
-    os.remove(in_fns[0])
+    zero_file(in_fns[0])
+    open(out_fn, 'w').close()
 
 
 @follows(merge_hf_vcf)
 @transform((filtrate_low_qual, select_snp_variants, select_indel_variants, hardfilter_indel_variants,
             hardfilter_snp_variants),
-           suffix(vcf_ext), '')
+           suffix(vcf_ext), vcf_ext+zeroed_ext)
 def remove_intermediate_vcfs(in_vcf, out):
-    os.remove(in_vcf)
+    zero_file(in_vcf)
     os.remove(in_vcf+'.idx')
+    open(out, 'w').close()
 
 @follows(merge_hf_vcf)
-@transform(realign_indel, suffix(realignedbam_ext), '')
+@transform(realign_indel, suffix(realignedbam_ext), realignedbam_ext+zeroed_ext)
 def remove_realigned_bam(in_fn, out_fn):
-    os.remove(in_fn)
+    zero_file(in_fn)
     os.remove(in_fn[:-1]+'i')
+    open(out_fn, 'w').close()
 
 @follows(merge_hf_vcf)
-@transform(get_recal_group, suffix(recal_ext), '')
+@transform(get_recal_group, suffix(recal_ext), recal_ext+zeroed_ext)
 def remove_read_group_file(in_fn, out_fn):
-    os.remove(in_fn[0])
+    zero_file(in_fn[0])
+    open(out_fn, 'w').close()
+
+options.history_file = '.gatk_exome_pipeline.ruffus_history.sqlite'
+
+cmdline.run(options, gnu_make_maximal_rebuild_mode=True, checksum_level=1)
 
 
-
-cmdline.run(options)
